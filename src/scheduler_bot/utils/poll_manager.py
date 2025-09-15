@@ -7,6 +7,53 @@ from ..database import Database
 
 logger = logging.getLogger(__name__)
 
+class PollResponseView(discord.ui.View):
+    """Persistent view with buttons to record availability responses."""
+
+    def __init__(self, poll_manager: 'PollManager'):
+        # timeout=None makes the view persistent across restarts when added via bot.add_view
+        super().__init__(timeout=None)
+        self.poll_manager = poll_manager
+
+    async def _handle_vote(self, interaction: discord.Interaction, saturday: bool, sunday: bool, label: str):
+        try:
+            poll = self.poll_manager.db.get_poll_by_message(str(interaction.message.id))
+            if not poll:
+                await interaction.response.send_message("❌ This poll is not active anymore.", ephemeral=True)
+                return
+
+            poll_id = poll[0]
+            user = interaction.user
+            self.poll_manager.db.add_response(poll_id, str(user.id), user.display_name, saturday, sunday)
+
+            # Update the poll message embed
+            await self.poll_manager._update_poll_message(poll_id, interaction.channel_id, interaction.message.id)
+
+            await interaction.response.send_message(f"✅ Recorded your response: {label}", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error handling vote: {e}")
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Failed to record your response.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Failed to record your response.", ephemeral=True)
+
+    @discord.ui.button(label="Both", style=discord.ButtonStyle.primary, emoji='📅', custom_id='poll_both')
+    async def vote_both(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_vote(interaction, saturday=True, sunday=True, label='Both days')
+
+    @discord.ui.button(label="Saturday", style=discord.ButtonStyle.secondary, emoji='🇸', custom_id='poll_sat')
+    async def vote_sat(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_vote(interaction, saturday=True, sunday=False, label='Saturday only')
+
+    @discord.ui.button(label="Sunday", style=discord.ButtonStyle.secondary, emoji='☀️', custom_id='poll_sun')
+    async def vote_sun(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_vote(interaction, saturday=False, sunday=True, label='Sunday only')
+
+    @discord.ui.button(label="Neither", style=discord.ButtonStyle.danger, emoji='❌', custom_id='poll_none')
+    async def vote_none(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_vote(interaction, saturday=False, sunday=False, label='Neither')
+
+
 class PollManager:
     """Manages availability polls and responses"""
     
@@ -21,99 +68,112 @@ class PollManager:
         self.db = database
         self.bot = None  # Will be set by commands setup
     
-    async def create_weekly_poll(self):
-        """Create the weekly availability poll"""
+    async def _resolve_channel(self, channel_id: int):
+        """Get a channel by ID, fetching from API if not cached."""
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except Exception as e:
+                logger.error(f"Failed to fetch channel {channel_id}: {e}")
+                return None
+        return channel
+
+    def _missing_creation_permissions(self, channel) -> list:
+        """Return a list of human-readable permission names missing for poll creation."""
+        # Permissions needed to create the embed and add reactions
+        required = {
+            'view_channel': 'View Channel',
+            'send_messages': 'Send Messages',
+            'embed_links': 'Embed Links',
+            'read_message_history': 'Read Message History',
+        }
+        try:
+            perms = channel.permissions_for(channel.guild.me)
+        except Exception:
+            # Fallback: if we cannot determine perms, assume missing
+            return list(required.values())
+
+        missing = [name for attr, name in required.items() if not getattr(perms, attr, False)]
+        return missing
+
+    async def create_weekly_poll(self, propagate: bool = False):
+        """Create the weekly availability poll.
+
+        Returns poll_id on success. If propagate is True, raises on failure; otherwise logs and returns None.
+        """
         try:
             channel_id = self.db.get_config('scheduling_channel')
             if not channel_id:
-                logger.warning("No scheduling channel configured")
-                return
-            
-            channel = self.bot.get_channel(int(channel_id))
+                msg = "No scheduling channel configured"
+                if propagate:
+                    raise RuntimeError(msg)
+                logger.warning(msg)
+                return None
+
+            channel = await self._resolve_channel(int(channel_id))
             if not channel:
-                logger.error(f"Could not find channel {channel_id}")
-                return
-            
+                msg = f"Could not find or access channel {channel_id}"
+                if propagate:
+                    raise RuntimeError(msg)
+                logger.error(msg)
+                return None
+
+            # Check permissions before attempting to send
+            missing = self._missing_creation_permissions(channel)
+            if missing:
+                msg = "Missing permissions in channel: " + ", ".join(missing)
+                if propagate:
+                    raise RuntimeError(msg)
+                logger.error(msg)
+                return None
+
             # Check if there's already an active poll
             active_poll = self.db.get_active_poll(channel_id)
             if active_poll:
-                logger.info("Active poll already exists, skipping creation")
-                return
-            
+                msg = "Active poll already exists, skipping creation"
+                if propagate:
+                    raise RuntimeError(msg)
+                logger.info(msg)
+                return None
+
             # Calculate deadline
             deadline = self._calculate_deadline()
-            
-            # Create poll message
+
+            # Create poll message with buttons
             embed = self._create_poll_embed(deadline)
-            message = await channel.send(embed=embed)
-            
-            # Add reactions
-            for emoji in self.REACTION_MAP.keys():
-                await message.add_reaction(emoji)
-            
+            view = PollResponseView(self)
+            message = await channel.send(embed=embed, view=view)
+
             # Save to database
             poll_id = self.db.create_poll(str(message.id), channel_id, deadline)
-            
+
             # Schedule reminders
             await self._schedule_reminders(poll_id, channel_id, deadline)
-            
+
             logger.info(f"Created weekly poll {poll_id} in channel {channel_id}")
-            
+            return poll_id
+
         except Exception as e:
+            if propagate:
+                raise
             logger.error(f"Failed to create weekly poll: {e}")
+            return None
     
     async def handle_reaction(self, payload: discord.RawReactionActionEvent, added: bool):
-        """Handle reaction add/remove events"""
-        try:
-            # Check if this is a poll message
-            poll = self.db.get_active_poll(str(payload.channel_id))
-            if not poll or poll[1] != str(payload.message_id):
-                return
-            
-            poll_id = poll[0]
-            emoji = str(payload.emoji)
-            
-            if emoji not in self.REACTION_MAP:
-                return
-            
-            # Get user info
-            user = self.bot.get_user(payload.user_id)
-            if not user:
-                return
-            
-            if added:
-                # Remove other reactions from this user
-                await self._remove_other_reactions(payload, emoji)
-                
-                # Add response to database
-                response_type, saturday, sunday = self.REACTION_MAP[emoji]
-                self.db.add_response(poll_id, str(user.id), user.display_name, saturday, sunday)
-                
-                logger.info(f"User {user.display_name} selected {response_type}")
-            
-            # Update the poll message
-            await self._update_poll_message(poll_id, payload.channel_id, payload.message_id)
-            
-        except Exception as e:
-            logger.error(f"Error handling reaction: {e}")
+        """Deprecated: Reaction handling replaced by buttons."""
+        return
     
     async def _remove_other_reactions(self, payload: discord.RawReactionActionEvent, keep_emoji: str):
-        """Remove user's other reactions from the poll"""
-        try:
-            channel = self.bot.get_channel(payload.channel_id)
-            message = await channel.fetch_message(payload.message_id)
-            
-            for reaction in message.reactions:
-                if str(reaction.emoji) != keep_emoji and str(reaction.emoji) in self.REACTION_MAP:
-                    await reaction.remove(self.bot.get_user(payload.user_id))
-                    
-        except Exception as e:
-            logger.error(f"Error removing other reactions: {e}")
+        """Deprecated: No longer needed when using buttons."""
+        return
     
     async def _update_poll_message(self, poll_id: int, channel_id: int, message_id: int):
         """Update the poll message with current responses"""
         try:
-            channel = self.bot.get_channel(channel_id)
+            channel = await self._resolve_channel(int(channel_id))
+            if channel is None:
+                return
             message = await channel.fetch_message(message_id)
             
             # Get poll info
@@ -131,7 +191,7 @@ class PollManager:
         except Exception as e:
             logger.error(f"Error updating poll message: {e}")
     
-    def _create_poll_embed(self, deadline: datetime, responses: list = None) -> discord.Embed:
+    def _create_poll_embed(self, deadline: datetime, responses: list = None, closed: bool = False) -> discord.Embed:
         """Create the poll embed message"""
         # Calculate the week date range
         now = datetime.now()
@@ -143,9 +203,12 @@ class PollManager:
         
         week_str = f"{saturday.strftime('%b %d')} - {sunday.strftime('%b %d, %Y')}"
         
+        title = "📊 D&D Session Availability"
+        if closed:
+            title += " — CLOSED"
         embed = discord.Embed(
-            title="📊 D&D Session Availability",
-            description=f"**Week of {week_str}**\n\nPlease react with your availability for this weekend:",
+            title=title,
+            description=f"**Week of {week_str}**\n\nUse the buttons below to record your availability:",
             color=0x5865F2
         )
         
@@ -163,29 +226,33 @@ class PollManager:
         
         # Add responses if provided
         if responses:
-            responded_users = []
-            pending_users = []
-            
-            # Get configured player role or fallback
-            player_role_id = self.db.get_config('player_role')
-            expected_players = self._get_expected_players(player_role_id)
-            
-            response_dict = {r[1]: r for r in responses}  # user_name -> response
-            
-            for player in expected_players:
-                if player in response_dict:
-                    responded_users.append(f"✅ {player}")
+            both = []
+            sat_only = []
+            sun_only = []
+            neither = []
+
+            for user_id, user_name, saturday, sunday, responded_at in responses:
+                if saturday and sunday:
+                    both.append(user_name)
+                elif saturday and not sunday:
+                    sat_only.append(user_name)
+                elif sunday and not saturday:
+                    sun_only.append(user_name)
                 else:
-                    pending_users.append(f"⏳ {player}")
-            
-            all_status = responded_users + pending_users
-            embed.add_field(
-                name="Responses",
-                value="\n".join(all_status) if all_status else "No responses yet",
-                inline=False
-            )
+                    neither.append(user_name)
+
+            def list_or_none(names):
+                return ", ".join(names) if names else "None"
+
+            embed.add_field(name=f"Both ({len(both)})", value=list_or_none(both), inline=False)
+            embed.add_field(name=f"Saturday ({len(sat_only)})", value=list_or_none(sat_only), inline=False)
+            embed.add_field(name=f"Sunday ({len(sun_only)})", value=list_or_none(sun_only), inline=False)
+            embed.add_field(name=f"Neither ({len(neither)})", value=list_or_none(neither), inline=False)
         
-        embed.set_footer(text="Reminders will be sent to pending players")
+        if closed:
+            embed.set_footer(text="Poll closed — no further responses accepted")
+        else:
+            embed.set_footer(text="Tap a button below to set your availability")
         return embed
     
     def _get_expected_players(self, player_role_id: Optional[str]) -> Set[str]:
@@ -222,5 +289,58 @@ class PollManager:
     
     async def _schedule_reminders(self, poll_id: int, channel_id: str, deadline: datetime):
         """Schedule reminders for the poll"""
-        # TODO: Implement reminder scheduling
+        # TODO: Implement reminder scheduling (e.g., APScheduler jobs)
         pass
+
+    async def close_active_poll(self, channel_id: Optional[str] = None) -> bool:
+        """Close the active poll in the given or configured channel and update the message UI."""
+        if channel_id is None:
+            channel_id = self.db.get_config('scheduling_channel')
+        if not channel_id:
+            raise RuntimeError("No scheduling channel configured")
+
+        poll = self.db.get_active_poll(channel_id)
+        if not poll:
+            raise RuntimeError("No active poll to close")
+
+        poll_id, message_id, ch_id, created_at, deadline = poll
+        # Mark as inactive in DB
+        self.db.close_poll(poll_id)
+
+        # Update the message to reflect closure and remove buttons
+        channel = await self._resolve_channel(int(ch_id))
+        if channel is None:
+            raise RuntimeError(f"Could not access channel {ch_id} to update message")
+        try:
+            message = await channel.fetch_message(int(message_id))
+        except Exception as e:
+            raise RuntimeError(f"Failed to fetch poll message: {e}")
+
+        responses = self.db.get_poll_responses(poll_id)
+        embed = self._create_poll_embed(datetime.fromisoformat(deadline), responses, closed=True)
+        await message.edit(embed=embed, view=None)
+        return True
+
+    async def purge_polls(self, channel_id: Optional[str] = None) -> int:
+        """Close all active polls in the given channel or all channels if None.
+
+        Returns the number of polls closed.
+        """
+        active = self.db.list_active_polls(channel_id)
+        count = 0
+        for poll_id, message_id, ch_id, created_at, deadline in active:
+            try:
+                self.db.close_poll(poll_id)
+                channel = await self._resolve_channel(int(ch_id))
+                if channel:
+                    try:
+                        message = await channel.fetch_message(int(message_id))
+                        responses = self.db.get_poll_responses(poll_id)
+                        embed = self._create_poll_embed(datetime.fromisoformat(deadline), responses, closed=True)
+                        await message.edit(embed=embed, view=None)
+                    except Exception as e:
+                        logger.warning(f"Could not edit poll message {message_id} in channel {ch_id}: {e}")
+                count += 1
+            except Exception as e:
+                logger.error(f"Failed to close poll {poll_id}: {e}")
+        return count

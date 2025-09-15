@@ -1,4 +1,3 @@
-from discord.ext import commands
 from .schedule_commands import ScheduleCommands
 
 async def setup_commands(bot):

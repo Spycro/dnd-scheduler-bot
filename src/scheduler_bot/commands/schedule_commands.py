@@ -51,7 +51,7 @@ class ScheduleCommands(commands.Cog):
         await interaction.response.defer()
         
         try:
-            await self.bot.poll_manager.create_weekly_poll()
+            poll_id = await self.bot.poll_manager.create_weekly_poll(propagate=True)
             await interaction.followup.send("✅ Availability poll created!")
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to create poll: {str(e)}")
@@ -226,3 +226,35 @@ class ScheduleCommands(commands.Cog):
             await interaction.response.send_message(embed=embed)
             
         logger.info(f"Configuration updated by {interaction.user}: {changes}")
+
+    @app_commands.command(name="schedule-close", description="Close the active poll and lock responses")
+    async def schedule_close(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
+        """Close the current active poll in the configured or specified channel"""
+        if not self.is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            channel_id = str(channel.id) if channel else self.bot.config.get('scheduling_channel')
+            if not channel_id:
+                await interaction.followup.send("❌ Scheduling not set up. Use `/schedule-init` or pass a channel.")
+                return
+            await self.bot.poll_manager.close_active_poll(channel_id)
+            await interaction.followup.send("✅ Closed the active poll and locked responses.")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to close poll: {e}")
+
+    @app_commands.command(name="schedule-purge", description="Close all active polls (optionally in a specific channel)")
+    async def schedule_purge(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
+        """Purge all active polls in the configured channel or across all channels if none configured and none specified."""
+        if not self.is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            channel_id = str(channel.id) if channel else self.bot.config.get('scheduling_channel')
+            count = await self.bot.poll_manager.purge_polls(channel_id)
+            scope = f"channel <#{channel_id}>" if channel_id else "all channels"
+            await interaction.followup.send(f"✅ Closed {count} active poll(s) in {scope}.")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to purge polls: {e}")

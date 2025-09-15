@@ -1,4 +1,16 @@
-import sqlite3
+try:
+    # Prefer the standard library module if available
+    import sqlite3
+except ModuleNotFoundError:
+    # Fallback to pysqlite3 if Python was built without _sqlite3
+    try:
+        import pysqlite3 as sqlite3  # type: ignore
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "SQLite support is not available in this Python build. "
+            "Install system SQLite dev libraries and reinstall Python, "
+            "or 'pip install pysqlite3-binary' to supply the module."
+        ) from e
 import os
 from datetime import datetime
 from typing import Optional, List, Tuple
@@ -72,6 +84,35 @@ class Database:
                 ORDER BY created_at DESC
                 LIMIT 1
             ''', (channel_id,))
+            return cursor.fetchone()
+
+    def list_active_polls(self, channel_id: Optional[str] = None) -> List[Tuple]:
+        """List all active polls, optionally filtered by channel_id"""
+        query = (
+            "SELECT id, message_id, channel_id, created_at, deadline FROM polls "
+            "WHERE is_active = 1"
+        )
+        params: Tuple = tuple()
+        if channel_id is not None:
+            query += " AND channel_id = ?"
+            params = (channel_id,)
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    def get_poll_by_message(self, message_id: str) -> Optional[Tuple]:
+        """Get the active poll by its Discord message ID"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, message_id, channel_id, created_at, deadline
+                FROM polls
+                WHERE message_id = ? AND is_active = 1
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (message_id,))
             return cursor.fetchone()
     
     def add_response(self, poll_id: int, user_id: str, user_name: str, 

@@ -7,7 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import logging
 
 from .database import Database
-from .utils.poll_manager import PollManager
+from .utils.poll_manager import PollManager, PollResponseView
 from .utils.config import Config
 
 load_dotenv()
@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 class SchedulerBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        intents.message_content = True
+        # Prefix commands are not used; disable message content to avoid privileged intents
+        intents.message_content = False
         intents.reactions = True
         
         super().__init__(
@@ -36,6 +37,25 @@ class SchedulerBot(commands.Bot):
         """Called when the bot is starting up"""
         from .commands import setup_commands
         await setup_commands(self)
+        # Register persistent view for poll response buttons
+        try:
+            self.add_view(PollResponseView(self.poll_manager))
+        except Exception as e:
+            logger.error(f"Failed to register persistent view: {e}")
+        # Sync slash commands. If GUILD_ID is set, sync to that guild for instant availability.
+        try:
+            guild_id = os.getenv('GUILD_ID')
+            if guild_id:
+                guild = discord.Object(id=int(guild_id))
+                # Copy global commands to the target guild for instant availability
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                logger.info(f"Synced {len(synced)} guild application command(s) to guild {guild_id}")
+            else:
+                synced = await self.tree.sync()
+                logger.info(f"Synced {len(synced)} global application command(s)")
+        except Exception as e:
+            logger.error(f"Failed to sync application commands: {e}")
         
         # Start the scheduler
         self.scheduler.start()
