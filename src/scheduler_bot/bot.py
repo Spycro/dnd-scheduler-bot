@@ -34,6 +34,7 @@ class SchedulerBot(commands.Bot):
         self.config = Config(self.db)
         self.poll_manager = PollManager(self.db)
         self.scheduler = AsyncIOScheduler()
+        self.poll_manager.set_scheduler(self.scheduler)
         
     async def setup_hook(self):
         """Called when the bot is starting up"""
@@ -60,6 +61,21 @@ class SchedulerBot(commands.Bot):
             logger.error(f"Failed to sync application commands: {e}")
         
         # Start the scheduler
+        try:
+            reminder_interval_minutes = int(os.getenv('REMINDER_CHECK_MINUTES', '60'))
+        except ValueError:
+            reminder_interval_minutes = 60
+        try:
+            self.scheduler.add_job(
+                self.poll_manager.dispatch_due_reminders,
+                'interval',
+                minutes=max(1, reminder_interval_minutes),
+                next_run_time=datetime.utcnow() + timedelta(minutes=1),
+                id='poll_reminder_dispatch'
+            )
+        except Exception as e:
+            logger.error(f"Failed to schedule reminder dispatcher: {e}")
+
         self.scheduler.start()
         logger.info("Bot setup completed")
         

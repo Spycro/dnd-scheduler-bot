@@ -10,6 +10,7 @@ class Config:
         'deadline_day': 'wednesday', 
         'deadline_time': '18:00',
         'reminder_intervals': '24,48',
+        'reminder_delivery': 'channel',
         'min_players': '3',
         'scheduling_channel': None,
         'player_role': None
@@ -35,8 +36,23 @@ class Config:
     
     def get_reminder_intervals(self) -> list[int]:
         """Get reminder intervals as a list of integers (hours)"""
-        intervals_str = self.get('reminder_intervals', '24,48')
-        return [int(x.strip()) for x in intervals_str.split(',')]
+        intervals_str = (self.get('reminder_intervals', '24,48') or '').strip()
+        if not intervals_str:
+            return [24]
+        try:
+            return [int(x.strip()) for x in intervals_str.split(',') if x.strip()]
+        except ValueError:
+            return [24]
+
+    def get_reminder_interval_hours(self) -> int:
+        """Return the primary reminder interval in hours."""
+        intervals = self.get_reminder_intervals()
+        return intervals[0] if intervals else 24
+
+    def get_reminder_delivery(self) -> str:
+        """Return the default reminder delivery mode (channel or dm)."""
+        value = (self.get('reminder_delivery', 'channel') or 'channel').lower()
+        return 'dm' if value == 'dm' else 'channel'
     
     def get_min_players(self) -> int:
         """Get minimum players as integer"""

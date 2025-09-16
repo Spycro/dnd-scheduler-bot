@@ -59,6 +59,17 @@ class Database:
                     value TEXT
                 )
             ''')
+
+            # Reminder tracking table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS poll_reminders (
+                    poll_id INTEGER PRIMARY KEY,
+                    last_sent_at TIMESTAMP,
+                    interval_hours INTEGER NOT NULL DEFAULT 24,
+                    delivery_mode TEXT NOT NULL DEFAULT 'channel',
+                    FOREIGN KEY (poll_id) REFERENCES polls(id)
+                )
+            ''')
             
             conn.commit()
     
@@ -164,3 +175,50 @@ class Database:
             cursor.execute('SELECT value FROM config WHERE key = ?', (key,))
             result = cursor.fetchone()
             return result[0] if result else default
+
+    def init_poll_reminder(self, poll_id: int, interval_hours: int, delivery_mode: str, *, last_sent_at: Optional[datetime] = None):
+        """Ensure a reminder row exists for a poll and initialize its tracking data."""
+        if last_sent_at is None:
+            last_sent_at = datetime.now()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO poll_reminders (poll_id, last_sent_at, interval_hours, delivery_mode)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(poll_id) DO UPDATE SET
+                    interval_hours = excluded.interval_hours,
+                    delivery_mode = excluded.delivery_mode,
+                    last_sent_at = COALESCE(poll_reminders.last_sent_at, excluded.last_sent_at)
+            ''', (poll_id, last_sent_at, interval_hours, delivery_mode))
+            conn.commit()
+
+    def update_poll_reminder_sent(self, poll_id: int, sent_at: datetime):
+        """Update the last time a reminder was sent for a poll."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE poll_reminders
+                SET last_sent_at = ?
+                WHERE poll_id = ?
+            ''', (sent_at, poll_id))
+            conn.commit()
+
+    def list_active_reminders(self) -> List[Tuple]:
+        """Return reminder metadata for all active polls."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT p.id, p.channel_id, p.message_id, p.created_at, p.deadline,
+                       r.last_sent_at, r.interval_hours, r.delivery_mode
+                FROM polls p
+                JOIN poll_reminders r ON p.id = r.poll_id
+                WHERE p.is_active = 1
+            ''')
+            return cursor.fetchall()
+
+    def delete_poll_reminder(self, poll_id: int):
+        """Remove reminder tracking for a poll."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM poll_reminders WHERE poll_id = ?', (poll_id,))
+            conn.commit()

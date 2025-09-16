@@ -4,6 +4,7 @@ from discord import app_commands
 import os
 from datetime import datetime, timedelta
 import logging
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +48,39 @@ class ScheduleCommands(commands.Cog):
         if not self.is_admin(interaction.user.id):
             await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
             return
-        
+
         await interaction.response.defer()
-        
+
         try:
             poll_id = await self.bot.poll_manager.create_weekly_poll(propagate=True)
             await interaction.followup.send("✅ Availability poll created!")
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to create poll: {str(e)}")
             logger.error(f"Failed to create immediate poll: {e}")
-    
+
+    @app_commands.command(name="schedule-remind", description="Send a reminder for the active poll")
+    @app_commands.describe(delivery="Where to send the reminder (channel or dm)")
+    async def schedule_remind(self, interaction: discord.Interaction, delivery: Literal['channel', 'dm'] = None):
+        """Manually trigger a reminder for the current poll."""
+        if not self.is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            mode = (delivery or self.bot.config.get_reminder_delivery()).lower()
+            sent = await self.bot.poll_manager.send_manual_reminder(
+                delivery_mode=mode,
+                requested_by=interaction.user
+            )
+            if sent:
+                target = "DMs" if mode == 'dm' else "the scheduling channel"
+                await interaction.followup.send(f"✅ Reminder sent via {target}.", ephemeral=True)
+            else:
+                await interaction.followup.send("ℹ️ Reminder skipped (no eligible recipients).", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to send reminder: {e}", ephemeral=True)
+
     @app_commands.command(name="schedule-status", description="Show current week's availability responses")
     async def schedule_status(self, interaction: discord.Interaction):
         """Show current poll status"""
@@ -136,14 +160,16 @@ class ScheduleCommands(commands.Cog):
         poll_time="Time to send polls (HH:MM format, 24-hour)",
         deadline_day="Day responses are due",
         deadline_time="Time responses are due (HH:MM format, 24-hour)",
-        min_players="Minimum players needed for a session"
+        min_players="Minimum players needed for a session",
+        reminder_delivery="Send reminders in the scheduling channel or via DM"
     )
     async def schedule_config(self, interaction: discord.Interaction,
                             poll_day: str = None,
                             poll_time: str = None,
                             deadline_day: str = None,
                             deadline_time: str = None,
-                            min_players: int = None):
+                            min_players: int = None,
+                            reminder_delivery: Literal['channel', 'dm'] = None):
         """Configure bot settings"""
         if not self.is_admin(interaction.user.id):
             await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
@@ -196,6 +222,11 @@ class ScheduleCommands(commands.Cog):
                 return
             self.bot.config.set('min_players', str(min_players))
             changes.append(f"Minimum players: {min_players}")
+
+        if reminder_delivery:
+            mode = reminder_delivery.lower()
+            self.bot.config.set('reminder_delivery', mode)
+            changes.append(f"Reminder delivery: {'DMs' if mode == 'dm' else 'Channel'}")
         
         if not changes:
             # Show current config
@@ -210,6 +241,8 @@ class ScheduleCommands(commands.Cog):
                 ('Deadline Day', self.bot.config.get('deadline_day').title()),
                 ('Deadline Time', self.bot.config.get('deadline_time')),
                 ('Minimum Players', self.bot.config.get('min_players')),
+                ('Reminder Interval (hrs)', str(self.bot.config.get_reminder_interval_hours())),
+                ('Reminder Delivery', self.bot.config.get_reminder_delivery().title()),
                 ('Scheduling Channel', f"<#{self.bot.config.get('scheduling_channel')}>" if self.bot.config.get('scheduling_channel') else "Not set")
             ]
             

@@ -1,6 +1,6 @@
 import discord
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Set, Tuple
+from typing import Optional, Dict, Set, Tuple, List
 import logging
 
 from ..database import Database
@@ -67,6 +67,11 @@ class PollManager:
     def __init__(self, database: Database):
         self.db = database
         self.bot = None  # Will be set by commands setup
+        self.scheduler = None  # Will be populated by the main bot when available
+
+    def set_scheduler(self, scheduler):
+        """Attach the shared APScheduler instance for reminder jobs."""
+        self.scheduler = scheduler
     
     async def _resolve_channel(self, channel_id: int):
         """Get a channel by ID, fetching from API if not cached."""
@@ -337,9 +342,207 @@ class PollManager:
         return deadline
     
     async def _schedule_reminders(self, poll_id: int, channel_id: str, deadline: datetime):
-        """Schedule reminders for the poll"""
-        # TODO: Implement reminder scheduling (e.g., APScheduler jobs)
-        pass
+        """Initialize reminder tracking for a poll."""
+        interval = 24
+        delivery_mode = 'channel'
+        if self.bot:
+            try:
+                interval = self.bot.config.get_reminder_interval_hours()
+                delivery_mode = self.bot.config.get_reminder_delivery()
+            except Exception:
+                logger.warning("Failed to load reminder configuration; falling back to defaults.")
+        self.db.init_poll_reminder(poll_id, interval, delivery_mode)
+
+    async def dispatch_due_reminders(self):
+        """Send automatic reminders for any polls that are due."""
+        if not self.bot:
+            return
+        now = datetime.now()
+        try:
+            default_interval = self.bot.config.get_reminder_interval_hours()
+            default_mode = self.bot.config.get_reminder_delivery()
+        except Exception:
+            default_interval = 24
+            default_mode = 'channel'
+
+        for poll in self.db.list_active_polls(None):
+            poll_id, _, channel_id, created_at, _ = poll
+            created_dt = datetime.fromisoformat(created_at) if isinstance(created_at, str) else created_at
+            self.db.init_poll_reminder(poll_id, default_interval, default_mode, last_sent_at=created_dt)
+
+        for row in self.db.list_active_reminders():
+            try:
+                poll_id, channel_id, message_id, created_at, deadline, last_sent_at, interval_hours, delivery_mode = row
+                deadline_dt = datetime.fromisoformat(deadline) if isinstance(deadline, str) else deadline
+                if deadline_dt <= now:
+                    continue
+                if self.bot:
+                    desired_interval = self.bot.config.get_reminder_interval_hours()
+                    desired_mode = self.bot.config.get_reminder_delivery()
+                    if interval_hours != desired_interval or delivery_mode not in {'channel', 'dm'} or delivery_mode != desired_mode:
+                        self.db.init_poll_reminder(poll_id, desired_interval, desired_mode)
+                        interval_hours = desired_interval
+                        delivery_mode = desired_mode
+                created_dt = datetime.fromisoformat(created_at) if isinstance(created_at, str) else created_at
+                if last_sent_at:
+                    last_sent_dt = datetime.fromisoformat(last_sent_at) if isinstance(last_sent_at, str) else last_sent_at
+                else:
+                    last_sent_dt = created_dt or now
+                next_due = last_sent_dt + timedelta(hours=interval_hours)
+                if next_due > now:
+                    continue
+                await self._deliver_reminder(
+                    poll_id,
+                    str(channel_id),
+                    str(message_id),
+                    deadline_dt,
+                    delivery_mode,
+                    manual=False
+                )
+            except Exception as e:
+                logger.error(f"Failed to process reminders for poll {row[0] if row else 'unknown'}: {e}")
+
+    async def send_manual_reminder(self, channel_id: Optional[str] = None, delivery_mode: Optional[str] = None,
+                                   requested_by: Optional[discord.abc.User] = None) -> bool:
+        """Send a reminder for the active poll in the specified or configured channel."""
+        if channel_id is None:
+            channel_id = self.db.get_config('scheduling_channel')
+        if not channel_id:
+            raise RuntimeError("No scheduling channel configured")
+
+        poll = self.db.get_active_poll(channel_id)
+        if not poll:
+            raise RuntimeError("No active poll to remind")
+
+        poll_id, message_id, _, created_at, deadline = poll
+        try:
+            deadline_dt = datetime.fromisoformat(deadline) if isinstance(deadline, str) else deadline
+        except Exception as e:
+            raise RuntimeError(f"Invalid poll deadline: {e}")
+
+        mode = (delivery_mode or (self.bot.config.get_reminder_delivery() if self.bot else 'channel')).lower()
+        if mode not in { 'channel', 'dm' }:
+            mode = 'channel'
+
+        return await self._deliver_reminder(
+            poll_id,
+            str(channel_id),
+            str(message_id),
+            deadline_dt,
+            mode,
+            manual=True,
+            requested_by=requested_by
+        )
+
+    async def _deliver_reminder(self, poll_id: int, channel_id: str, message_id: str,
+                                 deadline: datetime, delivery_mode: str, *,
+                                 manual: bool, requested_by: Optional[discord.abc.User] = None) -> bool:
+        """Deliver a reminder via the configured delivery mode."""
+        try:
+            channel = await self._resolve_channel(int(channel_id))
+        except Exception as e:
+            logger.error(f"Failed to resolve channel {channel_id}: {e}")
+            return False
+        if channel is None:
+            return False
+
+        guild = getattr(channel, 'guild', None)
+        poll_url = None
+        if guild:
+            poll_url = f"https://discord.com/channels/{guild.id}/{channel_id}/{message_id}"
+
+        responses = self.db.get_poll_responses(poll_id)
+        responded_ids = {user_id for user_id, *_ in responses}
+
+        role_id = self.db.get_config('player_role')
+        role = None
+        pending_members: List[discord.Member] = []
+        if guild and role_id:
+            try:
+                role = guild.get_role(int(role_id))
+            except Exception:
+                role = None
+            if role:
+                pending_members = [m for m in role.members if not m.bot and str(m.id) not in responded_ids]
+
+        now = datetime.now()
+        if deadline <= now:
+            return False
+
+        if delivery_mode == 'dm':
+            if not guild:
+                if manual:
+                    raise RuntimeError("Cannot send DMs outside of a guild context")
+                return False
+            if not pending_members:
+                if manual:
+                    raise RuntimeError("Everyone in the configured player role has already responded")
+                return False
+            delivered = False
+            failures = 0
+            for member in pending_members:
+                try:
+                    message_lines = [
+                        f"Hi {member.display_name},",
+                        "There's an active availability poll and your response is still needed.",
+                        f"Please respond before <t:{int(deadline.timestamp())}:F>."
+                    ]
+                    if poll_url:
+                        message_lines.append(f"Poll link: {poll_url}")
+                    message_lines.append("Thanks!")
+                    await member.send('\n'.join(message_lines))
+                    delivered = True
+                except Exception as e:
+                    failures += 1
+                    logger.warning(f"Could not DM reminder to {member}: {e}")
+            if delivered:
+                self.db.update_poll_reminder_sent(poll_id, now)
+            if manual and not delivered:
+                raise RuntimeError("Could not send DMs to any pending members")
+            return delivered
+
+        # Default to channel reminder
+        highlight = None
+        allowed_mentions = None
+        if role:
+            highlight = role.mention
+            allowed_mentions = discord.AllowedMentions(roles=True)
+
+        if not manual and role and not pending_members:
+            # Avoid sending redundant reminders when everyone with the tracked role responded
+            return False
+
+        embed = discord.Embed(
+            title="⏰ Poll Reminder",
+            description=(
+                "Please record your availability before the deadline.\n"
+                + (f"[Respond to the poll]({poll_url})" if poll_url else "Use the poll message to respond.")
+            ),
+            color=0xFEE75C
+        )
+        embed.add_field(name="Deadline", value=f"<t:{int(deadline.timestamp())}:F>", inline=False)
+
+        if pending_members:
+            embed.add_field(
+                name="Still waiting on",
+                value="\n".join(member.mention for member in pending_members),
+                inline=False
+            )
+        elif manual:
+            embed.add_field(name="Status", value="All tracked players have already responded ✅", inline=False)
+
+        if manual and requested_by:
+            embed.set_footer(text=f"Reminder requested by {requested_by.display_name}")
+
+        try:
+            await channel.send(content=highlight, embed=embed, allowed_mentions=allowed_mentions)
+            self.db.update_poll_reminder_sent(poll_id, now)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send reminder in channel {channel_id}: {e}")
+            if manual:
+                raise RuntimeError(f"Failed to send reminder: {e}")
+            return False
 
     async def close_active_poll(self, channel_id: Optional[str] = None) -> bool:
         """Close the active poll in the given or configured channel and update the message UI."""
@@ -355,6 +558,7 @@ class PollManager:
         poll_id, message_id, ch_id, created_at, deadline = poll
         # Mark as inactive in DB
         self.db.close_poll(poll_id)
+        self.db.delete_poll_reminder(poll_id)
 
         # Update the message to reflect closure and remove buttons
         channel = await self._resolve_channel(int(ch_id))
@@ -381,6 +585,7 @@ class PollManager:
         for poll_id, message_id, ch_id, created_at, deadline in active:
             try:
                 self.db.close_poll(poll_id)
+                self.db.delete_poll_reminder(poll_id)
                 channel = await self._resolve_channel(int(ch_id))
                 if channel:
                     try:
