@@ -1,6 +1,6 @@
 import discord
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Set
+from typing import Optional, Dict, Set, Tuple
 import logging
 
 from ..database import Database
@@ -141,7 +141,8 @@ class PollManager:
             deadline = self._calculate_deadline()
 
             # Create poll message with buttons
-            embed = self._create_poll_embed(deadline)
+            sat_ok, sun_ok = self._compute_day_feasibility(channel, [])
+            embed = self._create_poll_embed(deadline, responses=[], feasibility=(sat_ok, sun_ok))
             view = PollResponseView(self)
             message = await channel.send(embed=embed, view=view)
 
@@ -183,15 +184,16 @@ class PollManager:
             
             deadline = datetime.fromisoformat(poll_data[4])
             responses = self.db.get_poll_responses(poll_id)
-            
+
             # Create updated embed
-            embed = self._create_poll_embed(deadline, responses)
+            sat_ok, sun_ok = self._compute_day_feasibility(channel, responses)
+            embed = self._create_poll_embed(deadline, responses, feasibility=(sat_ok, sun_ok))
             await message.edit(embed=embed)
             
         except Exception as e:
             logger.error(f"Error updating poll message: {e}")
     
-    def _create_poll_embed(self, deadline: datetime, responses: list = None, closed: bool = False) -> discord.Embed:
+    def _create_poll_embed(self, deadline: datetime, responses: list = None, closed: bool = False, feasibility: Optional[Tuple[bool, bool]] = None) -> discord.Embed:
         """Create the poll embed message"""
         # Calculate the week date range
         now = datetime.now()
@@ -224,6 +226,17 @@ class PollManager:
             inline=False
         )
         
+        # Day feasibility status (based on role or min_players)
+        if feasibility is not None:
+            sat_ok, sun_ok = feasibility
+            def label(ok: bool) -> str:
+                return "✅ Possible" if ok else "❌ Not possible"
+            embed.add_field(
+                name="Feasibility",
+                value=f"Saturday: {label(sat_ok)}\nSunday: {label(sun_ok)}",
+                inline=False
+            )
+        
         # Add responses if provided
         if responses:
             both = []
@@ -254,6 +267,42 @@ class PollManager:
         else:
             embed.set_footer(text="Tap a button below to set your availability")
         return embed
+
+    def _compute_day_feasibility(self, channel, responses: list) -> Tuple[bool, bool]:
+        """Compute if a session is possible on Saturday and Sunday.
+
+        If a player_role is set and found in the guild, requires all members with that role to be available.
+        Otherwise falls back to meeting min_players.
+        """
+        # Sets of user IDs available for each day
+        available_sat = {r[0] for r in responses if r[2]}
+        available_sun = {r[0] for r in responses if r[3]}
+
+        role_id_str = self.db.get_config('player_role')
+        try:
+            min_players = int(self.db.get_config('min_players', '3'))
+        except Exception:
+            min_players = 3
+
+        # Prefer strict role-based check when role is configured
+        role = None
+        if getattr(channel, 'guild', None) and role_id_str:
+            try:
+                role = channel.guild.get_role(int(role_id_str))
+            except Exception:
+                role = None
+        if role is not None:
+            expected_ids = {str(m.id) for m in role.members}
+            if expected_ids:
+                sat_ok = expected_ids.issubset(available_sat)
+                sun_ok = expected_ids.issubset(available_sun)
+                return sat_ok, sun_ok
+            # If role has no cached members, fall back to threshold to avoid false positives
+
+        # Fallback: threshold by min_players
+        sat_ok = len(available_sat) >= min_players
+        sun_ok = len(available_sun) >= min_players
+        return sat_ok, sun_ok
     
     def _get_expected_players(self, player_role_id: Optional[str]) -> Set[str]:
         """Get list of expected players (placeholder for now)"""
@@ -317,7 +366,8 @@ class PollManager:
             raise RuntimeError(f"Failed to fetch poll message: {e}")
 
         responses = self.db.get_poll_responses(poll_id)
-        embed = self._create_poll_embed(datetime.fromisoformat(deadline), responses, closed=True)
+        sat_ok, sun_ok = self._compute_day_feasibility(channel, responses)
+        embed = self._create_poll_embed(datetime.fromisoformat(deadline), responses, closed=True, feasibility=(sat_ok, sun_ok))
         await message.edit(embed=embed, view=None)
         return True
 
@@ -336,7 +386,8 @@ class PollManager:
                     try:
                         message = await channel.fetch_message(int(message_id))
                         responses = self.db.get_poll_responses(poll_id)
-                        embed = self._create_poll_embed(datetime.fromisoformat(deadline), responses, closed=True)
+                        sat_ok, sun_ok = self._compute_day_feasibility(channel, responses)
+                        embed = self._create_poll_embed(datetime.fromisoformat(deadline), responses, closed=True, feasibility=(sat_ok, sun_ok))
                         await message.edit(embed=embed, view=None)
                     except Exception as e:
                         logger.warning(f"Could not edit poll message {message_id} in channel {ch_id}: {e}")

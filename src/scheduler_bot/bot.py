@@ -18,9 +18,11 @@ logger = logging.getLogger(__name__)
 class SchedulerBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        # Prefix commands are not used; disable message content to avoid privileged intents
+        # Prefix commands are not used; disable message content
         intents.message_content = False
         intents.reactions = True
+        # Enable members intent so role membership can be checked for feasibility
+        intents.members = True
         
         super().__init__(
             command_prefix='!',

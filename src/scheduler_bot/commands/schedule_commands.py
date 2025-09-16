@@ -227,6 +227,25 @@ class ScheduleCommands(commands.Cog):
             
         logger.info(f"Configuration updated by {interaction.user}: {changes}")
 
+    @app_commands.command(name="schedule-players", description="Set the Discord role representing all players")
+    @app_commands.describe(role="Role that represents players who must be available")
+    async def schedule_players(self, interaction: discord.Interaction, role: discord.Role):
+        """Configure the player role used to compute 'all players available' feasibility."""
+        if not self.is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+            return
+        self.bot.config.set('player_role', str(role.id))
+        embed = discord.Embed(
+            title="✅ Player Role Set",
+            description=f"Using role {role.mention} to determine if all players are available.",
+            color=0x00ff00
+        )
+        embed.add_field(name="Note", value=(
+            "Ensure 'Server Members Intent' is enabled in the Developer Portal and in the bot, "
+            "so the bot can see members of the role. Otherwise feasibility falls back to min_players."
+        ), inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.command(name="schedule-close", description="Close the active poll and lock responses")
     async def schedule_close(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
         """Close the current active poll in the configured or specified channel"""
