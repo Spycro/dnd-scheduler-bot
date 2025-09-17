@@ -12,8 +12,8 @@ except ModuleNotFoundError:
             "or 'pip install pysqlite3-binary' to supply the module."
         ) from e
 import os
-from datetime import datetime
-from typing import Optional, List, Tuple
+from datetime import datetime, timezone
+from typing import Optional, List, Tuple, Dict, Any
 
 class Database:
     def __init__(self, db_path: str = "scheduler.db"):
@@ -70,9 +70,19 @@ class Database:
                     FOREIGN KEY (poll_id) REFERENCES polls(id)
                 )
             ''')
-            
+
+            # User-specific settings (timezone preferences, reminder opt-in, etc.)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id TEXT PRIMARY KEY,
+                    timezone TEXT,
+                    dm_opt_in BOOLEAN NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP
+                )
+            ''')
+
             conn.commit()
-    
+
     def create_poll(self, message_id: str, channel_id: str, deadline: datetime) -> int:
         """Create a new poll and return its ID"""
         with sqlite3.connect(self.db_path) as conn:
@@ -80,7 +90,7 @@ class Database:
             cursor.execute('''
                 INSERT INTO polls (message_id, channel_id, created_at, deadline)
                 VALUES (?, ?, ?, ?)
-            ''', (message_id, channel_id, datetime.now(), deadline))
+            ''', (message_id, channel_id, datetime.now(timezone.utc), deadline))
             conn.commit()
             return cursor.lastrowid
     
@@ -132,10 +142,10 @@ class Database:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO responses 
+                INSERT OR REPLACE INTO responses
                 (poll_id, user_id, user_name, saturday, sunday, responded_at)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (poll_id, user_id, user_name, saturday, sunday, datetime.now()))
+            ''', (poll_id, user_id, user_name, saturday, sunday, datetime.now(timezone.utc)))
             conn.commit()
     
     def get_poll_responses(self, poll_id: int) -> List[Tuple]:
@@ -179,7 +189,7 @@ class Database:
     def init_poll_reminder(self, poll_id: int, interval_hours: int, delivery_mode: str, *, last_sent_at: Optional[datetime] = None):
         """Ensure a reminder row exists for a poll and initialize its tracking data."""
         if last_sent_at is None:
-            last_sent_at = datetime.now()
+            last_sent_at = datetime.now(timezone.utc)
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -202,6 +212,83 @@ class Database:
                 WHERE poll_id = ?
             ''', (sent_at, poll_id))
             conn.commit()
+
+    def get_user_settings(self, user_id: str) -> Optional[Tuple[str, Optional[str], int, Optional[str]]]:
+        """Return the stored settings for a user, if any."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT user_id, timezone, dm_opt_in, updated_at
+                FROM user_settings
+                WHERE user_id = ?
+            ''', (user_id,))
+            row = cursor.fetchone()
+            return row if row else None
+
+    def upsert_user_settings(self, user_id: str, *, timezone_name: Optional[str] = None,
+                              dm_opt_in: Optional[bool] = None) -> Dict[str, Any]:
+        """Create or update user settings and return the resulting row."""
+        current = self.get_user_settings(user_id)
+        existing_timezone = current[1] if current else None
+        existing_opt_in = bool(current[2]) if current else False
+
+        tz_value = timezone_name if timezone_name is not None else existing_timezone
+        opt_in_value = dm_opt_in if dm_opt_in is not None else existing_opt_in
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO user_settings (user_id, timezone, dm_opt_in, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    timezone = excluded.timezone,
+                    dm_opt_in = excluded.dm_opt_in,
+                    updated_at = excluded.updated_at
+            ''', (user_id, tz_value, int(opt_in_value), datetime.now(timezone.utc)))
+            conn.commit()
+
+        # Fetch the updated row to return a consistent view
+        updated = self.get_user_settings(user_id)
+        if updated is None:
+            raise RuntimeError("Failed to persist user settings")
+        return {
+            'user_id': updated[0],
+            'timezone': updated[1],
+            'dm_opt_in': bool(updated[2]),
+            'updated_at': updated[3],
+        }
+
+    def list_user_settings(self) -> List[Tuple[str, Optional[str], int]]:
+        """Return all stored user settings."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT user_id, timezone, dm_opt_in
+                FROM user_settings
+            ''')
+            return cursor.fetchall()
+
+    def list_user_timezones(self) -> List[Tuple[str, str]]:
+        """Return user IDs and timezone names for users that have a timezone configured."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT user_id, timezone
+                FROM user_settings
+                WHERE timezone IS NOT NULL AND timezone != ''
+            ''')
+            return cursor.fetchall()
+
+    def list_dm_opt_in_users(self) -> List[Tuple[str, Optional[str]]]:
+        """Return user IDs (and optional timezone) for users that opted into DM reminders."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT user_id, timezone
+                FROM user_settings
+                WHERE dm_opt_in = 1
+            ''')
+            return cursor.fetchall()
 
     def list_active_reminders(self) -> List[Tuple]:
         """Return reminder metadata for all active polls."""

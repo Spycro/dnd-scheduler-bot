@@ -1,6 +1,7 @@
 import discord
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Set, Tuple, List
+from zoneinfo import ZoneInfo
 import logging
 
 from ..database import Database
@@ -72,7 +73,23 @@ class PollManager:
     def set_scheduler(self, scheduler):
         """Attach the shared APScheduler instance for reminder jobs."""
         self.scheduler = scheduler
-    
+
+    def _get_base_timezone(self) -> ZoneInfo:
+        """Return the configured base timezone for scheduling calculations."""
+        if self.bot and getattr(self.bot, 'config', None):
+            return self.bot.config.get_default_timezone()
+        tz_name = self.db.get_config('default_timezone', 'UTC') or 'UTC'
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            return ZoneInfo('UTC')
+
+    def _normalize_datetime(self, value: datetime) -> datetime:
+        """Ensure the provided datetime is timezone-aware in the base timezone."""
+        if value.tzinfo is None:
+            return value.replace(tzinfo=self._get_base_timezone())
+        return value
+
     async def _resolve_channel(self, channel_id: int):
         """Get a channel by ID, fetching from API if not cached."""
         channel = self.bot.get_channel(channel_id)
@@ -147,7 +164,12 @@ class PollManager:
 
             # Create poll message with buttons
             sat_ok, sun_ok = self._compute_day_feasibility(channel, [])
-            embed = self._create_poll_embed(deadline, responses=[], feasibility=(sat_ok, sun_ok))
+            embed = self._create_poll_embed(
+                deadline,
+                responses=[],
+                feasibility=(sat_ok, sun_ok),
+                guild=getattr(channel, 'guild', None)
+            )
             view = PollResponseView(self)
             message = await channel.send(embed=embed, view=view)
 
@@ -188,20 +210,31 @@ class PollManager:
                 return
             
             deadline = datetime.fromisoformat(poll_data[4])
+            deadline = self._normalize_datetime(deadline)
             responses = self.db.get_poll_responses(poll_id)
 
             # Create updated embed
             sat_ok, sun_ok = self._compute_day_feasibility(channel, responses)
-            embed = self._create_poll_embed(deadline, responses, feasibility=(sat_ok, sun_ok))
+            embed = self._create_poll_embed(
+                deadline,
+                responses,
+                feasibility=(sat_ok, sun_ok),
+                guild=getattr(channel, 'guild', None)
+            )
             await message.edit(embed=embed)
             
         except Exception as e:
             logger.error(f"Error updating poll message: {e}")
     
-    def _create_poll_embed(self, deadline: datetime, responses: list = None, closed: bool = False, feasibility: Optional[Tuple[bool, bool]] = None) -> discord.Embed:
+    def _create_poll_embed(self, deadline: datetime, responses: list = None, closed: bool = False,
+                            feasibility: Optional[Tuple[bool, bool]] = None,
+                            guild: Optional[discord.Guild] = None) -> discord.Embed:
         """Create the poll embed message"""
-        # Calculate the week date range
-        now = datetime.now()
+        # Calculate the week date range relative to the base timezone
+        base_tz = self._get_base_timezone()
+        deadline = self._normalize_datetime(deadline)
+
+        now = datetime.now(base_tz)
         days_until_saturday = (5 - now.weekday()) % 7
         if days_until_saturday == 0 and now.weekday() == 5:  # If today is Saturday
             days_until_saturday = 0
@@ -224,13 +257,21 @@ class PollManager:
             value="📅 Both days\n🇸 Saturday only\n☀️ Sunday only\n❌ Neither day",
             inline=False
         )
-        
+
         embed.add_field(
             name="Deadline",
             value=f"<t:{int(deadline.timestamp())}:F>",
             inline=False
         )
-        
+
+        timezone_overview = self._build_timezone_overview(deadline, guild)
+        if timezone_overview:
+            embed.add_field(
+                name="Local deadlines",
+                value=timezone_overview,
+                inline=False
+            )
+
         # Day feasibility status (based on role or min_players)
         if feasibility is not None:
             sat_ok, sun_ok = feasibility
@@ -272,6 +313,58 @@ class PollManager:
         else:
             embed.set_footer(text="Tap a button below to set your availability")
         return embed
+
+    def _build_timezone_overview(self, deadline: datetime, guild: Optional[discord.Guild]) -> Optional[str]:
+        """Build a human-readable summary of the deadline in each configured timezone."""
+        if guild is None:
+            return None
+
+        deadline = self._normalize_datetime(deadline)
+        settings = self.db.list_user_timezones()
+        if not settings:
+            return None
+
+        grouped: Dict[str, List[str]] = {}
+        for user_id, tz_name in settings:
+            if not tz_name:
+                continue
+            member = guild.get_member(int(user_id))
+            if member is None or member.bot:
+                continue
+            grouped.setdefault(tz_name, []).append(member.display_name)
+
+        if not grouped:
+            return None
+
+        lines: List[str] = []
+        for tz_name, members in sorted(grouped.items()):
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception:
+                continue
+            localized = deadline.astimezone(tz)
+            formatted = localized.strftime('%a %b %d • %I:%M %p %Z')
+            member_list = ', '.join(sorted(members))
+            lines.append(f"**{tz_name}** — {formatted}\n• {member_list}")
+
+        if not lines:
+            return None
+
+        # Discord embeds have a 1024 character limit per field; trim conservatively
+        summary = "\n".join(lines)
+        if len(summary) > 1024:
+            trimmed_lines: List[str] = []
+            total = 0
+            for line in lines:
+                if total + len(line) + 1 > 1024:
+                    break
+                trimmed_lines.append(line)
+                total += len(line) + 1
+            summary = "\n".join(trimmed_lines)
+            if len(trimmed_lines) < len(lines):
+                summary += "\n…"
+
+        return summary if summary else None
 
     def _compute_day_feasibility(self, channel, responses: list) -> Tuple[bool, bool]:
         """Compute if a session is possible on Saturday and Sunday.
@@ -331,14 +424,14 @@ class PollManager:
         target_weekday = day_map.get(deadline_day, 2)  # Default to Wednesday
         
         # Calculate days until target weekday
-        now = datetime.now()
+        now = datetime.now(self._get_base_timezone())
         days_ahead = target_weekday - now.weekday()
         if days_ahead <= 0:  # Target day already happened this week
             days_ahead += 7
-        
+
         deadline = now + timedelta(days=days_ahead)
         deadline = deadline.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        
+
         return deadline
     
     async def _schedule_reminders(self, poll_id: int, channel_id: str, deadline: datetime):
@@ -357,7 +450,7 @@ class PollManager:
         """Send automatic reminders for any polls that are due."""
         if not self.bot:
             return
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         try:
             default_interval = self.bot.config.get_reminder_interval_hours()
             default_mode = self.bot.config.get_reminder_delivery()
@@ -368,12 +461,14 @@ class PollManager:
         for poll in self.db.list_active_polls(None):
             poll_id, _, channel_id, created_at, _ = poll
             created_dt = datetime.fromisoformat(created_at) if isinstance(created_at, str) else created_at
+            created_dt = self._normalize_datetime(created_dt)
             self.db.init_poll_reminder(poll_id, default_interval, default_mode, last_sent_at=created_dt)
 
         for row in self.db.list_active_reminders():
             try:
                 poll_id, channel_id, message_id, created_at, deadline, last_sent_at, interval_hours, delivery_mode = row
                 deadline_dt = datetime.fromisoformat(deadline) if isinstance(deadline, str) else deadline
+                deadline_dt = self._normalize_datetime(deadline_dt)
                 if deadline_dt <= now:
                     continue
                 if self.bot:
@@ -384,8 +479,10 @@ class PollManager:
                         interval_hours = desired_interval
                         delivery_mode = desired_mode
                 created_dt = datetime.fromisoformat(created_at) if isinstance(created_at, str) else created_at
+                created_dt = self._normalize_datetime(created_dt)
                 if last_sent_at:
                     last_sent_dt = datetime.fromisoformat(last_sent_at) if isinstance(last_sent_at, str) else last_sent_at
+                    last_sent_dt = self._normalize_datetime(last_sent_dt)
                 else:
                     last_sent_dt = created_dt or now
                 next_due = last_sent_dt + timedelta(hours=interval_hours)
@@ -448,6 +545,7 @@ class PollManager:
 
         guild = getattr(channel, 'guild', None)
         poll_url = None
+        deadline = self._normalize_datetime(deadline)
         if guild:
             poll_url = f"https://discord.com/channels/{guild.id}/{channel_id}/{message_id}"
 
@@ -465,7 +563,28 @@ class PollManager:
             if role:
                 pending_members = [m for m in role.members if not m.bot and str(m.id) not in responded_ids]
 
-        now = datetime.now()
+        timezone_map = {str(user_id): tz for user_id, tz in self.db.list_user_timezones()}
+
+        opted_in_members: List[discord.Member] = []
+        if guild:
+            for user_id, _ in self.db.list_dm_opt_in_users():
+                user_id_str = str(user_id)
+                if user_id_str in responded_ids:
+                    continue
+                try:
+                    member = guild.get_member(int(user_id_str))
+                except Exception:
+                    member = None
+                if member and not member.bot:
+                    opted_in_members.append(member)
+
+        if opted_in_members:
+            combined: Dict[int, discord.Member] = {m.id: m for m in pending_members}
+            for member in opted_in_members:
+                combined.setdefault(member.id, member)
+            pending_members = list(combined.values())
+
+        now = datetime.now(timezone.utc)
         if deadline <= now:
             return False
 
@@ -487,6 +606,16 @@ class PollManager:
                         "There's an active availability poll and your response is still needed.",
                         f"Please respond before <t:{int(deadline.timestamp())}:F>."
                     ]
+                    tz_name = timezone_map.get(str(member.id))
+                    if tz_name:
+                        try:
+                            tz = ZoneInfo(tz_name)
+                            local_deadline = deadline.astimezone(tz)
+                            message_lines.append(
+                                f"Your local deadline: {local_deadline.strftime('%A %B %d at %I:%M %p %Z')}"
+                            )
+                        except Exception:
+                            pass
                     if poll_url:
                         message_lines.append(f"Poll link: {poll_url}")
                     message_lines.append("Thanks!")
@@ -571,7 +700,14 @@ class PollManager:
 
         responses = self.db.get_poll_responses(poll_id)
         sat_ok, sun_ok = self._compute_day_feasibility(channel, responses)
-        embed = self._create_poll_embed(datetime.fromisoformat(deadline), responses, closed=True, feasibility=(sat_ok, sun_ok))
+        deadline_dt = datetime.fromisoformat(deadline) if isinstance(deadline, str) else deadline
+        embed = self._create_poll_embed(
+            self._normalize_datetime(deadline_dt),
+            responses,
+            closed=True,
+            feasibility=(sat_ok, sun_ok),
+            guild=getattr(channel, 'guild', None)
+        )
         await message.edit(embed=embed, view=None)
         return True
 
@@ -592,7 +728,14 @@ class PollManager:
                         message = await channel.fetch_message(int(message_id))
                         responses = self.db.get_poll_responses(poll_id)
                         sat_ok, sun_ok = self._compute_day_feasibility(channel, responses)
-                        embed = self._create_poll_embed(datetime.fromisoformat(deadline), responses, closed=True, feasibility=(sat_ok, sun_ok))
+                        deadline_dt = datetime.fromisoformat(deadline) if isinstance(deadline, str) else deadline
+                        embed = self._create_poll_embed(
+                            self._normalize_datetime(deadline_dt),
+                            responses,
+                            closed=True,
+                            feasibility=(sat_ok, sun_ok),
+                            guild=getattr(channel, 'guild', None)
+                        )
                         await message.edit(embed=embed, view=None)
                     except Exception as e:
                         logger.warning(f"Could not edit poll message {message_id} in channel {ch_id}: {e}")
