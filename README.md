@@ -9,6 +9,7 @@ A Discord bot that automates the weekly availability polling process for D&D gro
 - **Role-Aware Feasibility**: Optionally require every member of a designated player role to respond before a day is marked as viable.
 - **Reminder System**: Automatic reminder job plus manual `/schedule-remind` command with Discord channel or DM delivery modes.
 - **Poll Administration**: Close or purge active polls, set configuration, and view real-time status via slash commands.
+- **Timezone Awareness**: Configure a guild-wide base timezone and let players opt into localized deadlines and DM reminders.
 
 ## Quick Start
 
@@ -54,6 +55,7 @@ A Discord bot that automates the weekly availability polling process for D&D gro
 | `/schedule-players` | Configure the Discord role that represents all players | Admin |
 | `/schedule-close` | Close the currently active poll and lock responses | Admin |
 | `/schedule-purge` | Close all active polls in the configured (or specified) channel | Admin |
+| `/schedule-timezone` | Set or view personal timezone preferences and DM reminder opt-in | Everyone |
 
 ## Configuration
 
@@ -63,12 +65,14 @@ Use `/schedule-config` to set:
 - **Minimum players**: Required for session recommendations
 - **Reminder delivery**: Send reminders in-channel or via DM
 - **Reminder interval**: Control how often automated reminders are sent
+- **Default timezone**: Select the base timezone used for poll and deadline calculations
 
 Additional commands:
 - `/schedule-players` to choose which Discord role represents the player roster.
 - `/schedule-close` to lock the active poll once a decision is made.
 - `/schedule-purge` to force-close any lingering polls in one or all channels.
 - `/schedule-remind` to trigger a reminder immediately if you need faster follow-up.
+- `/schedule-timezone` to see or update your personal timezone and DM reminder preferences.
 
 ## Responding to Polls
 
@@ -92,6 +96,14 @@ Create a `.env` file (see `.env.example`) with:
 | `DATABASE_PATH` | Optional path for the SQLite database file (defaults to `scheduler.db`). |
 | `GUILD_ID` | Optional guild ID for faster slash command registration on startup. |
 | `REMINDER_CHECK_MINUTES` | Override how often the reminder background job runs (defaults to 60). |
+## Timezone Preferences
+
+The bot supports localized deadlines so groups that span multiple regions can stay aligned.
+
+- **Guild default timezone**: Admins can run `/schedule-config default_timezone:<IANA name>` to choose the base timezone for calculating poll creation times and deadlines.
+- **Player preferences**: Any user may run `/schedule-timezone` to view their current settings, `/schedule-timezone timezone:Europe/Paris` to register their local timezone, or `/schedule-timezone timezone:clear` to remove it.
+- **Reminder opt-in**: `/schedule-timezone dm_reminders:true` enables DM reminders even if the user is not part of the tracked player role.
+- **Localized embeds**: When at least one timezone preference is registered, the poll embed adds a "Local deadlines" field that translates the deadline for each timezone and lists who uses it. DM reminders also include a personalized "Your local deadline" line.
 
 ## Project Structure
 

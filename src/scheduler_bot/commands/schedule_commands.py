@@ -4,7 +4,8 @@ from discord import app_commands
 import os
 from datetime import datetime, timedelta
 import logging
-from typing import Literal
+from typing import Literal, Optional
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,8 @@ class ScheduleCommands(commands.Cog):
         deadline_day="Day responses are due",
         deadline_time="Time responses are due (HH:MM format, 24-hour)",
         min_players="Minimum players needed for a session",
-        reminder_delivery="Send reminders in the scheduling channel or via DM"
+        reminder_delivery="Send reminders in the scheduling channel or via DM",
+        default_timezone="Base timezone for poll and deadline calculations (e.g. Europe/Paris)"
     )
     async def schedule_config(self, interaction: discord.Interaction,
                             poll_day: str = None,
@@ -169,7 +171,8 @@ class ScheduleCommands(commands.Cog):
                             deadline_day: str = None,
                             deadline_time: str = None,
                             min_players: int = None,
-                            reminder_delivery: Literal['channel', 'dm'] = None):
+                            reminder_delivery: Literal['channel', 'dm'] = None,
+                            default_timezone: str = None):
         """Configure bot settings"""
         if not self.is_admin(interaction.user.id):
             await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
@@ -227,6 +230,19 @@ class ScheduleCommands(commands.Cog):
             mode = reminder_delivery.lower()
             self.bot.config.set('reminder_delivery', mode)
             changes.append(f"Reminder delivery: {'DMs' if mode == 'dm' else 'Channel'}")
+
+        if default_timezone:
+            tz_input = default_timezone.strip()
+            try:
+                ZoneInfo(tz_input)
+            except Exception:
+                await interaction.response.send_message(
+                    "❌ Invalid timezone. Use an IANA timezone like Europe/Paris or America/Tokyo.",
+                    ephemeral=True
+                )
+                return
+            self.bot.config.set('default_timezone', tz_input)
+            changes.append(f"Default timezone: {tz_input}")
         
         if not changes:
             # Show current config
@@ -243,6 +259,7 @@ class ScheduleCommands(commands.Cog):
                 ('Minimum Players', self.bot.config.get('min_players')),
                 ('Reminder Interval (hrs)', str(self.bot.config.get_reminder_interval_hours())),
                 ('Reminder Delivery', self.bot.config.get_reminder_delivery().title()),
+                ('Default Timezone', self.bot.config.get_default_timezone_name()),
                 ('Scheduling Channel', f"<#{self.bot.config.get('scheduling_channel')}>" if self.bot.config.get('scheduling_channel') else "Not set")
             ]
             
@@ -259,6 +276,63 @@ class ScheduleCommands(commands.Cog):
             await interaction.response.send_message(embed=embed)
             
         logger.info(f"Configuration updated by {interaction.user}: {changes}")
+
+    @app_commands.command(name="schedule-timezone", description="Set or view your personal timezone and reminder preferences")
+    @app_commands.describe(
+        timezone="Your IANA timezone (e.g. Europe/Paris). Use 'clear' to remove.",
+        dm_reminders="Enable direct messages when you're pending on a poll"
+    )
+    async def schedule_timezone(self, interaction: discord.Interaction, timezone: Optional[str] = None,
+                                dm_reminders: Optional[bool] = None):
+        """Allow a user to configure their timezone and reminder preferences."""
+        user_id = str(interaction.user.id)
+
+        if timezone is None and dm_reminders is None:
+            current = self.bot.db.get_user_settings(user_id)
+            embed = discord.Embed(title="🕒 Your scheduling preferences", color=0x5865F2)
+            if current:
+                tz_value = current[1] or "Not set"
+                dm_value = "Enabled" if bool(current[2]) else "Disabled"
+            else:
+                tz_value = "Not set"
+                dm_value = "Disabled"
+            embed.add_field(name="Timezone", value=tz_value, inline=False)
+            embed.add_field(name="DM Reminders", value=dm_value, inline=False)
+            embed.set_footer(text="Use /schedule-timezone timezone:<name> to update.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        tz_update: Optional[str] = None
+        if timezone is not None:
+            tz_text = timezone.strip()
+            if tz_text.lower() in {"", "clear", "reset", "none", "remove"}:
+                tz_update = None
+            else:
+                try:
+                    ZoneInfo(tz_text)
+                except Exception:
+                    await interaction.response.send_message(
+                        "❌ Invalid timezone. Please provide an IANA timezone like Europe/Paris or Asia/Tokyo.",
+                        ephemeral=True
+                    )
+                    return
+                tz_update = tz_text
+
+        settings = self.bot.db.upsert_user_settings(
+            user_id,
+            timezone_name=tz_update if timezone is not None else None,
+            dm_opt_in=dm_reminders
+        )
+
+        embed = discord.Embed(title="✅ Preferences updated", color=0x00ff00)
+        embed.add_field(name="Timezone", value=settings['timezone'] or "Not set", inline=False)
+        embed.add_field(name="DM Reminders", value="Enabled" if settings['dm_opt_in'] else "Disabled", inline=False)
+        if settings['timezone']:
+            embed.set_footer(text="Poll deadlines will include your local time in embeds and reminders.")
+        else:
+            embed.set_footer(text="Set a timezone to receive localized deadlines in reminders.")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="schedule-players", description="Set the Discord role representing all players")
     @app_commands.describe(role="Role that represents players who must be available")

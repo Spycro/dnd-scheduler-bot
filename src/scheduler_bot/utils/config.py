@@ -1,4 +1,5 @@
 from typing import Optional
+from zoneinfo import ZoneInfo
 from ..database import Database
 
 class Config:
@@ -13,7 +14,8 @@ class Config:
         'reminder_delivery': 'channel',
         'min_players': '3',
         'scheduling_channel': None,
-        'player_role': None
+        'player_role': None,
+        'default_timezone': 'UTC'
     }
     
     def __init__(self, database: Database):
@@ -57,3 +59,16 @@ class Config:
     def get_min_players(self) -> int:
         """Get minimum players as integer"""
         return int(self.get('min_players', '3'))
+
+    def get_default_timezone_name(self) -> str:
+        """Return the configured default timezone name (IANA identifier)."""
+        value = self.get('default_timezone', 'UTC') or 'UTC'
+        return value
+
+    def get_default_timezone(self) -> ZoneInfo:
+        """Return the default timezone as a ZoneInfo object, falling back to UTC on errors."""
+        tz_name = self.get_default_timezone_name()
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            return ZoneInfo('UTC')
