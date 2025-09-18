@@ -6,11 +6,16 @@ services:
     env_file:
       - .env
     volumes:
-      - dbdata:/data
-    # network_mode: bridge is default; no special ports required
-    # The bot connects outbound to Discord
+      - dbdata:/data:rw
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
 
 volumes:
   dbdata:
     driver: local
-

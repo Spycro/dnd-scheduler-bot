@@ -12,25 +12,37 @@ RUN apt-get update \
        ca-certificates sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
+# Create dedicated runtime user and data directories with strict permissions
+RUN addgroup --system bot \
+    && adduser --system --ingroup bot --home /app --shell /usr/sbin/nologin bot \
+    && mkdir -p /app /data \
+    && chown bot:bot /app /data \
+    && chmod 0750 /app \
+    && chmod 0700 /data
+
 WORKDIR /app
 
 # Install Python dependencies first for better layer caching
-COPY requirements.txt ./
+COPY requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && pip install -r /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt
 
-# Copy application code
-COPY src ./src
-COPY main.py ./main.py
+# Copy application code and helper scripts with restricted ownership
+COPY --chown=bot:bot src ./src
+COPY --chown=bot:bot main.py ./main.py
+COPY --chown=bot:bot healthcheck.py ./healthcheck.py
+COPY --chown=bot:bot docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Ensure a persistent location for the SQLite database and link default path
-RUN mkdir -p /data \
-    && ln -s /data/scheduler.db /app/scheduler.db
+RUN ln -s /data/scheduler.db /app/scheduler.db \
+    && chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
-# Set an explicit healthcheck to ensure the container has network reachability
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import socket,sys;\n\ntry: socket.gethostbyname('discord.com'); sys.exit(0)\nexcept Exception: sys.exit(1)"
+# Set an explicit healthcheck that performs a lightweight Discord auth probe
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD python /app/healthcheck.py
 
-# The app reads configuration from environment variables and .env.
-# Provide a helpful default command.
+USER bot
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "main.py"]

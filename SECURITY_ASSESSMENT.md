@@ -3,10 +3,37 @@
 This document captures the current production-readiness review for deploying the scheduler bot with Docker on a VPS. Use it as a reference when hardening the environment.
 
 ## Container & Runtime
-- Run the container as a dedicated non-root user and ensure `/app` and `/data` are owned by that user before launch.
-- Enforce minimum required filesystem permissions on the SQLite volume and mount it read/write only for the bot process.
-- Apply CPU and memory limits through your orchestrator (Docker Compose/Swarm/Kubernetes) to prevent resource exhaustion.
-- Add a startup/liveness probe that verifies the bot process is responsive (import the bot module or perform a lightweight Discord API check) instead of relying solely on DNS resolution.
+
+- **Use a dedicated runtime user.**
+  - Update the Dockerfile to create a `bot` user and set `USER bot` for the runtime layer so the Discord token is never handled as root.
+  - During deployment (Compose, Swarm, or Kubernetes), pre-create `/data` on the host and `chown -R bot:bot /data` so the SQLite database is writable without escalated privileges.
+  - Add an init container or entrypoint step that ensures `/app` and `/data` directories remain owned by `bot` on every launch.
+
+- **Harden filesystem permissions.**
+  - Mount the SQLite volume as read/write for the bot and read-only for everything else (`:rw` for the service, `:ro` elsewhere).
+  - Restrict directory permissions to `0750` for `/app` and `0700` for `/data` so only the container user can read bot code or database contents.
+  - Avoid bind-mounting the entire project directory in production. Prefer copying only the required artefacts into the image and mounting a dedicated `/data` volume.
+
+- **Constrain compute resources.**
+  - Add CPU and memory reservations/limits to the `docker-compose.yml` service definition, for example:
+
+    ```yaml
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    ```
+
+  - Mirror these limits in production orchestrators so a runaway job or Discord event flood cannot starve neighbouring workloads.
+
+- **Implement health and startup checks.**
+  - Replace simple TCP/DNS health checks with a script that imports `main` and executes a quick `asyncio.run(bot.http.static_login())` or another lightweight Discord API check.
+  - Wire the script into `HEALTHCHECK` in the Dockerfile or via Compose `healthcheck` stanza with conservative timeouts/backoff.
+  - Alert on repeated failures so operators can intervene before the bot is evicted or rate-limited by Discord.
 
 ## Dependencies & Image Maintenance
 - Replace the loose `>=` version specifiers with pinned versions (and optional hashes) in `requirements.txt` for reproducible builds.
