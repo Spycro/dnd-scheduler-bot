@@ -1,6 +1,13 @@
 """Container health check for the scheduler bot."""
 import asyncio
 import os
+import sys
+from pathlib import Path
+
+
+# Ensure the ``src`` directory is importable when the health check runs in
+# isolation (e.g. from Docker health checks) where PYTHONPATH is not set.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from scheduler_bot.bot import SchedulerBot
 
