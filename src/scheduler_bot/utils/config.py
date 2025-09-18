@@ -15,7 +15,8 @@ class Config:
         'min_players': '3',
         'scheduling_channel': None,
         'player_role': None,
-        'default_timezone': 'UTC'
+        'default_timezone': 'UTC',
+        'time_format': '24h'
     }
     
     def __init__(self, database: Database):
@@ -55,10 +56,21 @@ class Config:
         """Return the default reminder delivery mode (channel or dm)."""
         value = (self.get('reminder_delivery', 'channel') or 'channel').lower()
         return 'dm' if value == 'dm' else 'channel'
-    
+
     def get_min_players(self) -> int:
         """Get minimum players as integer"""
         return int(self.get('min_players', '3'))
+
+    def get_time_format(self) -> str:
+        """Return the configured time format identifier ('24h' or '12h')."""
+        value = (self.get('time_format', '24h') or '24h').strip().lower()
+        if value in {'12', '12h', '12-hour', 'ampm', 'am/pm'}:
+            return '12h'
+        return '24h'
+
+    def prefers_24h(self) -> bool:
+        """True when the configured time format is 24-hour."""
+        return self.get_time_format() == '24h'
 
     def get_default_timezone_name(self) -> str:
         """Return the configured default timezone name (IANA identifier)."""

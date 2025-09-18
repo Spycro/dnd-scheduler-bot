@@ -163,7 +163,8 @@ class ScheduleCommands(commands.Cog):
         deadline_time="Time responses are due (HH:MM format, 24-hour)",
         min_players="Minimum players needed for a session",
         reminder_delivery="Send reminders in the scheduling channel or via DM",
-        default_timezone="Base timezone for poll and deadline calculations (e.g. Europe/Paris)"
+        default_timezone="Base timezone for poll and deadline calculations (e.g. Europe/Paris)",
+        time_format="Display poll times in 24h or 12h (AM/PM) format"
     )
     async def schedule_config(self, interaction: discord.Interaction,
                             poll_day: str = None,
@@ -172,7 +173,8 @@ class ScheduleCommands(commands.Cog):
                             deadline_time: str = None,
                             min_players: int = None,
                             reminder_delivery: Literal['channel', 'dm'] = None,
-                            default_timezone: str = None):
+                            default_timezone: str = None,
+                            time_format: Literal['24h', '12h'] = None):
         """Configure bot settings"""
         if not self.is_admin(interaction.user.id):
             await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
@@ -243,6 +245,12 @@ class ScheduleCommands(commands.Cog):
                 return
             self.bot.config.set('default_timezone', tz_input)
             changes.append(f"Default timezone: {tz_input}")
+
+        if time_format:
+            fmt = time_format.lower()
+            self.bot.config.set('time_format', fmt)
+            label = '24-hour' if fmt == '24h' else '12-hour (AM/PM)'
+            changes.append(f"Time format: {label}")
         
         if not changes:
             # Show current config
@@ -260,6 +268,7 @@ class ScheduleCommands(commands.Cog):
                 ('Reminder Interval (hrs)', str(self.bot.config.get_reminder_interval_hours())),
                 ('Reminder Delivery', self.bot.config.get_reminder_delivery().title()),
                 ('Default Timezone', self.bot.config.get_default_timezone_name()),
+                ('Time Format', '24-hour' if self.bot.config.prefers_24h() else '12-hour (AM/PM)'),
                 ('Scheduling Channel', f"<#{self.bot.config.get('scheduling_channel')}>" if self.bot.config.get('scheduling_channel') else "Not set")
             ]
             

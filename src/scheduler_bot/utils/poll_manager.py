@@ -84,6 +84,24 @@ class PollManager:
         except Exception:
             return ZoneInfo('UTC')
 
+    def _prefers_24h(self) -> bool:
+        """Return True when times should be displayed in 24-hour format."""
+        if self.bot and getattr(self.bot, 'config', None):
+            try:
+                return self.bot.config.prefers_24h()
+            except Exception:
+                pass
+        value = self.db.get_config('time_format', '24h') or '24h'
+        normalized = str(value).strip().lower()
+        return normalized not in {'12', '12h', '12-hour', 'ampm', 'am/pm'}
+
+    def _format_clock(self, dt: datetime) -> str:
+        """Format the time component according to configured 12h/24h preference."""
+        if self._prefers_24h():
+            return dt.strftime('%H:%M')
+        label = dt.strftime('%I:%M %p')
+        return label.lstrip('0')
+
     def _normalize_datetime(self, value: datetime) -> datetime:
         """Ensure the provided datetime is timezone-aware in the base timezone."""
         if value.tzinfo is None:
@@ -170,8 +188,27 @@ class PollManager:
                 feasibility=(sat_ok, sun_ok),
                 guild=getattr(channel, 'guild', None)
             )
+
+            highlight = None
+            allowed_mentions = None
+            role_id = self.db.get_config('player_role')
+            guild = getattr(channel, 'guild', None)
+            if guild and role_id:
+                role = None
+                try:
+                    role = guild.get_role(int(role_id))
+                except (TypeError, ValueError):
+                    logger.warning(f"Configured player role ID '{role_id}' is not a valid integer")
+                except Exception as e:
+                    logger.warning(f"Failed to resolve player role {role_id}: {e}")
+                if role:
+                    highlight = role.mention
+                    allowed_mentions = discord.AllowedMentions(roles=True)
+                else:
+                    logger.warning("Player role configured but not found in guild; skipping mention")
+
             view = PollResponseView(self)
-            message = await channel.send(embed=embed, view=view)
+            message = await channel.send(content=highlight, embed=embed, view=view, allowed_mentions=allowed_mentions)
 
             # Save to database
             poll_id = self.db.create_poll(str(message.id), channel_id, deadline)
@@ -258,9 +295,14 @@ class PollManager:
             inline=False
         )
 
+        base_deadline = deadline.astimezone(base_tz)
+        date_part = base_deadline.strftime('%Y-%m-%d')
+        time_part = self._format_clock(base_deadline)
+        base_label = f"{date_part} {time_part}"
+        base_tz_name = base_deadline.tzname() or getattr(base_tz, 'key', 'UTC')
         embed.add_field(
             name="Deadline",
-            value=f"<t:{int(deadline.timestamp())}:F>",
+            value=f"{base_label} ({base_tz_name})\n<t:{int(deadline.timestamp())}:R>",
             inline=False
         )
 
@@ -343,7 +385,11 @@ class PollManager:
             except Exception:
                 continue
             localized = deadline.astimezone(tz)
-            formatted = localized.strftime('%a %b %d • %I:%M %p %Z')
+            date_label = localized.strftime('%a %b %d')
+            time_label = self._format_clock(localized)
+            tz_abbrev = localized.strftime('%Z')
+            tz_suffix = f" {tz_abbrev}" if tz_abbrev else ""
+            formatted = f"{date_label} • {time_label}{tz_suffix}"
             member_list = ', '.join(sorted(members))
             lines.append(f"**{tz_name}** — {formatted}\n• {member_list}")
 
@@ -611,8 +657,12 @@ class PollManager:
                         try:
                             tz = ZoneInfo(tz_name)
                             local_deadline = deadline.astimezone(tz)
+                            date_portion = local_deadline.strftime('%A %B %d')
+                            time_portion = self._format_clock(local_deadline)
+                            tz_abbrev = local_deadline.strftime('%Z')
+                            tz_suffix = f" {tz_abbrev}" if tz_abbrev else ""
                             message_lines.append(
-                                f"Your local deadline: {local_deadline.strftime('%A %B %d at %I:%M %p %Z')}"
+                                f"Your local deadline: {date_portion} at {time_portion}{tz_suffix}"
                             )
                         except Exception:
                             pass
