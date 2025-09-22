@@ -51,9 +51,13 @@ class SchedulerBot(commands.Bot):
             if guild_id:
                 guild = discord.Object(id=int(guild_id))
                 # Copy global commands to the target guild for instant availability
+                self.tree.clear_commands(guild=guild)
                 self.tree.copy_global_to(guild=guild)
-                synced = await self.tree.sync(guild=guild)
-                logger.info(f"Synced {len(synced)} guild application command(s) to guild {guild_id}")
+                guild_synced = await self.tree.sync(guild=guild)
+                logger.info(f"Synced {len(guild_synced)} guild application command(s) to guild {guild_id}")
+
+                global_synced = await self.tree.sync()
+                logger.info(f"Synced {len(global_synced)} global application command(s)")
             else:
                 synced = await self.tree.sync()
                 logger.info(f"Synced {len(synced)} global application command(s)")
