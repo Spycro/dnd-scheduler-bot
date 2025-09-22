@@ -38,7 +38,7 @@ class ScheduleCommands(commands.Cog):
             value=(
                 "1️⃣ `/schedule-init` *(Admin)* — choose the channel for weekly polls.\n"
                 "2️⃣ `/schedule-config` *(Admin)* — set poll timing, deadlines, reminder mode, and minimum players.\n"
-                "3️⃣ `/schedule-players` *(Admin)* — point the bot at the player role so reminders track the right members.\n"
+                "3️⃣ `/schedule-players` *(Admin)* — assign the role that represents *all* active players so feasibility checks and reminders target the right people.\n"
                 "4️⃣ `/schedule-now` *(Admin, optional)* — kick off the first poll immediately."
             ),
             inline=False
@@ -50,6 +50,16 @@ class ScheduleCommands(commands.Cog):
                 "`/schedule-remind` — send a reminder in-channel or via DM.\n"
                 "`/schedule-close` — close an active poll when the session is set.\n"
                 "`/schedule-purge` — clean up lingering polls if something gets stuck."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Player Role Tips",
+            value=(
+                "Create a dedicated Discord role (e.g. `@Adventurers`) and add every player who must respond.\n"
+                "The bot pings this role in reminders, filters DM nudges, and decides when a day is viable.\n"
+                "Keep the role updated as your roster changes; the bot reuses it automatically each week."
             ),
             inline=False
         )
