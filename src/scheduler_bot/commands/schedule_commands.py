@@ -20,7 +20,53 @@ class ScheduleCommands(commands.Cog):
         """Check if user is an admin"""
         admin_ids = os.getenv('ADMIN_USER_IDS', '').split(',')
         return str(user_id) in admin_ids
-    
+
+    @app_commands.command(name="schedule-help", description="Show setup steps and command overview")
+    async def schedule_help(self, interaction: discord.Interaction):
+        """Display guidance for configuring and operating the bot."""
+        embed = discord.Embed(
+            title="🆘 Scheduler Bot Help",
+            description=(
+                "Follow these steps to get the scheduling workflow in place. "
+                "Commands marked with *Admin* require your ID in `ADMIN_USER_IDS`."
+            ),
+            color=0x5865F2
+        )
+
+        embed.add_field(
+            name="Setup",
+            value=(
+                "1️⃣ `/schedule-init` *(Admin)* — choose the channel for weekly polls.\n"
+                "2️⃣ `/schedule-config` *(Admin)* — set poll timing, deadlines, reminder mode, and minimum players.\n"
+                "3️⃣ `/schedule-players` *(Admin)* — point the bot at the player role so reminders track the right members.\n"
+                "4️⃣ `/schedule-now` *(Admin, optional)* — kick off the first poll immediately."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Ongoing Admin Tasks",
+            value=(
+                "`/schedule-remind` — send a reminder in-channel or via DM.\n"
+                "`/schedule-close` — close an active poll when the session is set.\n"
+                "`/schedule-purge` — clean up lingering polls if something gets stuck."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Player Tools",
+            value=(
+                "`/schedule-status` — check the current response tally and recommendation.\n"
+                "`/schedule-timezone` — view or update personal timezone and DM reminder opt-in."
+            ),
+            inline=False
+        )
+
+        embed.set_footer(text="Need more detail? See the README for full setup docs.")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.command(name="schedule-init", description="Set up scheduling in the current channel")
     @app_commands.describe(channel="Channel for scheduling polls (defaults to current channel)")
     async def schedule_init(self, interaction: discord.Interaction, channel: discord.TextChannel = None):

@@ -1,0 +1,15 @@
+services:
+  scheduler-bot:
+    build: .
+    image: scheduler-bot:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - dbdata:/data
+    # network_mode: bridge is default; no special ports required
+    # The bot connects outbound to Discord
+
+volumes:
+  dbdata:
+    driver: local

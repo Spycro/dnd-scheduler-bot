@@ -14,6 +14,7 @@ A Discord bot that automates the weekly availability polling process for D&D gro
 ## Quick Start
 
 1. **Clone and install dependencies**:
+
    ```bash
    git clone <repository-url>
    cd dnd-scheduler-bot
@@ -21,6 +22,7 @@ A Discord bot that automates the weekly availability polling process for D&D gro
    ```
 
 2. **Set up environment variables**:
+
    ```bash
    cp .env.example .env
    # Edit .env with your Discord bot token and settings
@@ -36,30 +38,47 @@ A Discord bot that automates the weekly availability polling process for D&D gro
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
 2. Create a new application and bot
 3. Copy the bot token to your `.env` file
-4. Invite the bot to your server with these permissions:
+4. Under **Bot → Privileged Gateway Intents**, enable **Server Members Intent** so the bot can track player-role responses
+5. Invite the bot to your server with these permissions:
    - Send Messages
    - Use Slash Commands
    - Add Reactions
    - Read Message History
    - Embed Links
 
+### OAuth2 Invite URL
+
+Use the OAuth2 URL Generator in the Discord Developer Portal to build the invite link:
+
+1. Open **OAuth2 → URL Generator** for your application.
+2. Under **Scopes**, check `bot` and `applications.commands`.
+3. Under **Bot Permissions**, select `View Channels`, `Send Messages`, `Add Reactions`, `Embed Links`, `Read Message History`, and `Use Slash Commands`.
+4. Copy the generated URL and replace `CLIENT_ID` with your application's client ID if needed.
+
+Example invite URL (replace `YOUR_CLIENT_ID`):
+
+```
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=2147568704&scope=bot%20applications.commands
+```
+
 ## Commands
 
-| Command | Description | Permission |
-|---------|-------------|------------|
-| `/schedule-init` | Set up scheduling in current channel | Admin |
-| `/schedule-now` | Create immediate availability poll | Admin |
-| `/schedule-remind` | Send the configured reminder immediately (channel or DM) | Admin |
-| `/schedule-status` | Show current week's responses and recommendation | Everyone |
-| `/schedule-config` | Configure poll timing, deadlines, reminder mode, and minimum players | Admin |
-| `/schedule-players` | Configure the Discord role that represents all players | Admin |
-| `/schedule-close` | Close the currently active poll and lock responses | Admin |
-| `/schedule-purge` | Close all active polls in the configured (or specified) channel | Admin |
-| `/schedule-timezone` | Set or view personal timezone preferences and DM reminder opt-in | Everyone |
+| Command              | Description                                                          | Permission |
+| -------------------- | -------------------------------------------------------------------- | ---------- |
+| `/schedule-init`     | Set up scheduling in current channel                                 | Admin      |
+| `/schedule-now`      | Create immediate availability poll                                   | Admin      |
+| `/schedule-remind`   | Send the configured reminder immediately (channel or DM)             | Admin      |
+| `/schedule-status`   | Show current week's responses and recommendation                     | Everyone   |
+| `/schedule-config`   | Configure poll timing, deadlines, reminder mode, and minimum players | Admin      |
+| `/schedule-players`  | Configure the Discord role that represents all players               | Admin      |
+| `/schedule-close`    | Close the currently active poll and lock responses                   | Admin      |
+| `/schedule-purge`    | Close all active polls in the configured (or specified) channel      | Admin      |
+| `/schedule-timezone` | Set or view personal timezone preferences and DM reminder opt-in     | Everyone   |
 
 ## Configuration
 
 Use `/schedule-config` to set:
+
 - **Poll day/time**: When weekly polls are sent
 - **Deadline day/time**: When responses are due
 - **Minimum players**: Required for session recommendations
@@ -68,6 +87,7 @@ Use `/schedule-config` to set:
 - **Default timezone**: Select the base timezone used for poll and deadline calculations
 
 Additional commands:
+
 - `/schedule-players` to choose which Discord role represents the player roster.
 - `/schedule-close` to lock the active poll once a decision is made.
 - `/schedule-purge` to force-close any lingering polls in one or all channels.
@@ -77,6 +97,7 @@ Additional commands:
 ## Responding to Polls
 
 Players respond to polls by pressing the interactive buttons attached to each poll message:
+
 - 📅 **Both** – Available on Saturday and Sunday
 - 🇸 **Saturday** – Only available on Saturday
 - ☀️ **Sunday** – Only available on Sunday
@@ -88,14 +109,15 @@ The bot automatically updates the poll embed to show counts, list respondents, a
 
 Create a `.env` file (see `.env.example`) with:
 
-| Variable | Description |
-|----------|-------------|
-| `DISCORD_TOKEN` | **Required.** Discord bot token. |
-| `ADMIN_USER_IDS` | Comma-separated Discord user IDs permitted to run admin commands. |
-| `DEFAULT_CHANNEL_ID` | Optional default scheduling channel (can also be set via `/schedule-init`). |
-| `DATABASE_PATH` | Optional path for the SQLite database file (defaults to `scheduler.db`). |
-| `GUILD_ID` | Optional guild ID for faster slash command registration on startup. |
-| `REMINDER_CHECK_MINUTES` | Override how often the reminder background job runs (defaults to 60). |
+| Variable                 | Description                                                                 |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `DISCORD_TOKEN`          | **Required.** Discord bot token.                                            |
+| `ADMIN_USER_IDS`         | Comma-separated Discord user IDs permitted to run admin commands.           |
+| `DEFAULT_CHANNEL_ID`     | Optional default scheduling channel (can also be set via `/schedule-init`). |
+| `DATABASE_PATH`          | Optional path for the SQLite database file (defaults to `scheduler.db`).    |
+| `GUILD_ID`               | Optional guild ID for faster slash command registration on startup.         |
+| `REMINDER_CHECK_MINUTES` | Override how often the reminder background job runs (defaults to 60).       |
+
 ## Timezone Preferences
 
 The bot supports localized deadlines so groups that span multiple regions can stay aligned.
@@ -131,6 +153,7 @@ dnd-scheduler-bot/
 ## Development
 
 This bot is built with:
+
 - **Python 3.10+**
 - **discord.py 2.x** for Discord integration
 - **SQLite** for data persistence
