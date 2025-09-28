@@ -683,9 +683,9 @@ class PollManager:
         # Default to channel reminder
         highlight = None
         allowed_mentions = None
-        if role:
-            highlight = role.mention
-            allowed_mentions = discord.AllowedMentions(roles=True)
+        if pending_members:
+            highlight = " ".join(member.mention for member in pending_members)
+            allowed_mentions = discord.AllowedMentions(users=True, roles=False, everyone=False)
 
         if not manual and role and not pending_members:
             # Avoid sending redundant reminders when everyone with the tracked role responded
