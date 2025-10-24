@@ -2,6 +2,10 @@
 
 A Discord bot that automates the weekly availability polling process for D&D groups, tracks responses, and sends reminders to ensure timely feedback from all players.
 
+## consideration
+
+This repository is managed with the jj vcs
+
 ## Features
 
 - **Weekly Availability Polls**: Automatically posts availability polls on a configurable schedule with APScheduler.
