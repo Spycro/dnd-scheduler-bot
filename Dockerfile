@@ -11,7 +11,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates sqlite3 \
     && rm -rf /var/lib/apt/lists/*
-# this is a test for
+
+
+# another revision
 # Create dedicated runtime user and data directories with strict permissions
 RUN addgroup --system bot \
     && adduser --system --ingroup bot --home /app --shell /usr/sbin/nologin bot \
